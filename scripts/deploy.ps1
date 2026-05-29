@@ -12,10 +12,25 @@ Set-Location C:\app\goal-slot-api
 # prisma.config.ts to parse cleanly when DATABASE_URL is missing
 # (which it is, briefly, when running under bare cmd from CI).
 if (Test-Path .env) {
-    Get-Content .env | Where-Object { $_ -match '^[A-Z_][A-Z0-9_]*=' } | ForEach-Object {
-        $name, $value = $_ -split '=', 2
-        [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+    foreach ($line in (Get-Content .env)) {
+        if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$') {
+            $name  = $matches[1]
+            $value = $matches[2].Trim()
+            # Strip surrounding single or double quotes if present
+            if (($value.StartsWith('"') -and $value.EndsWith('"')) -or
+                ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+            [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+        }
     }
+}
+# Sanity: report which scheme prisma will see (without leaking the URL)
+if ($env:DATABASE_URL) {
+    $scheme = ($env:DATABASE_URL -split '://')[0]
+    Write-Host "DATABASE_URL scheme: $scheme (length: $($env:DATABASE_URL.Length))"
+} else {
+    Write-Host "DATABASE_URL: <not set>"
 }
 if (-not $env:DATABASE_URL) {
     $env:DATABASE_URL = 'postgresql://stub:stub@localhost:5432/stub'
