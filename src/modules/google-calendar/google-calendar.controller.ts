@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Patch,
   Post,
   Put,
   Query,
@@ -13,7 +14,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { SaveSelectionsDto } from './dto/google-calendar.dto';
+import { SaveSelectionsDto, UpdatePushDto } from './dto/google-calendar.dto';
 import { GoogleCalendarService } from './services/google-calendar.service';
 
 @ApiTags('integrations')
@@ -72,6 +73,14 @@ export class GoogleCalendarController {
   @ApiOperation({ summary: 'Manually trigger a sync' })
   sync(@Request() req: any) {
     return this.googleCalendar.triggerSync(req.user.sub);
+  }
+
+  @Patch()
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Toggle pushing GoalSlot blocks to Google' })
+  setPush(@Request() req: any, @Body() dto: UpdatePushDto) {
+    return this.googleCalendar.setPush(req.user.sub, dto.pushEnabled);
   }
 
   @Delete()

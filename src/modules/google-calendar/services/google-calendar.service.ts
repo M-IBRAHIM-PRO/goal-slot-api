@@ -9,6 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { EncryptionService } from '../../../shared/services/encryption.service';
 import { SaveSelectionsDto } from '../dto/google-calendar.dto';
+import { CalendarPushService } from './calendar-push.service';
 import { CalendarSyncService } from './calendar-sync.service';
 import { errMessage, GoogleApiService } from './google-api.service';
 
@@ -25,6 +26,7 @@ export class GoogleCalendarService {
     private readonly encryption: EncryptionService,
     private readonly googleApi: GoogleApiService,
     private readonly sync: CalendarSyncService,
+    private readonly push: CalendarPushService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
   ) {}
@@ -132,6 +134,7 @@ export class GoogleCalendarService {
       accountEmail: connection.accountEmail,
       status: connection.status,
       scopes: connection.scopes,
+      pushEnabled: connection.pushEnabled,
       selections: connection.selections.map((s) => ({
         externalCalId: s.externalCalId,
         displayName: s.displayName,
@@ -208,6 +211,31 @@ export class GoogleCalendarService {
     return { success: true };
   }
 
+  // --- push toggle ---
+
+  // Flip the global push switch. Enabling kicks off a reconcile (lazy-creates
+  // the GoalSlot calendar + mirrors current blocks); disabling tears down the
+  // calendar and clears local pointers.
+  async setPush(userId: string, pushEnabled: boolean) {
+    const connection = await this.getActiveConnectionOrThrow(userId);
+
+    if (pushEnabled) {
+      await this.prisma.calendarConnection.update({
+        where: { id: connection.id },
+        data: { pushEnabled: true },
+      });
+      // Fire-and-forget so the toggle response is snappy; the cron backstop
+      // heals anything that fails here.
+      void this.push.reconcileUserPush(userId).catch((err) =>
+        this.logger.error(`Push enable reconcile failed: ${errMessage(err)}`),
+      );
+    } else {
+      await this.push.disablePush(userId);
+    }
+
+    return { success: true, pushEnabled };
+  }
+
   // --- events (grid overlay) ---
 
   async getEvents(userId: string, from: string, to: string) {
@@ -262,8 +290,22 @@ export class GoogleCalendarService {
     });
     if (!connection) return { success: true };
 
+    const refreshToken = this.decryptRefresh(connection);
+
+    // Best-effort delete of the dedicated GoalSlot calendar before revoking,
+    // so we don't orphan it in the user's Google account. Local cascade
+    // delete proceeds regardless.
+    if (connection.goalSlotCalendarId) {
+      try {
+        const client = this.googleApi.clientFromRefreshToken(refreshToken);
+        await this.googleApi.deleteCalendar(client, connection.goalSlotCalendarId);
+      } catch (err) {
+        this.logger.warn(`GoalSlot calendar delete on disconnect failed (ignored): ${errMessage(err)}`);
+      }
+    }
+
     // Best-effort revoke at Google; local cascade delete proceeds regardless.
-    await this.googleApi.revoke(this.decryptRefresh(connection));
+    await this.googleApi.revoke(refreshToken);
     await this.prisma.calendarConnection.delete({ where: { id: connection.id } });
     return { success: true };
   }

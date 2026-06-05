@@ -148,6 +148,92 @@ export class GoogleApiService {
     return data;
   }
 
+  // --- push (PR2): the dedicated "GoalSlot" calendar + its events ---
+
+  // Create the dedicated push-target calendar. Returns its id, stored on the
+  // connection so we only ever create one per user.
+  async createCalendar(client: OAuth2Client, summary: string): Promise<string> {
+    const calendar = google.calendar({ version: 'v3', auth: client });
+    const { data } = await calendar.calendars.insert({
+      requestBody: { summary },
+    });
+    if (!data.id) throw new Error('Google did not return a calendar id');
+    return data.id;
+  }
+
+  // Best-effort delete of the GoalSlot calendar (disconnect / disable push).
+  // A 404/410 (already gone) is swallowed so cleanup never blocks.
+  async deleteCalendar(client: OAuth2Client, calendarId: string): Promise<void> {
+    const calendar = google.calendar({ version: 'v3', auth: client });
+    try {
+      await calendar.calendars.delete({ calendarId });
+    } catch (err) {
+      if (isGoneError(err) || isNotFoundError(err)) return;
+      throw err;
+    }
+  }
+
+  async insertEvent(
+    client: OAuth2Client,
+    calendarId: string,
+    event: calendar_v3.Schema$Event,
+  ): Promise<calendar_v3.Schema$Event> {
+    const calendar = google.calendar({ version: 'v3', auth: client });
+    const { data } = await calendar.events.insert({
+      calendarId,
+      requestBody: event,
+    });
+    return data;
+  }
+
+  async patchEvent(
+    client: OAuth2Client,
+    calendarId: string,
+    eventId: string,
+    event: calendar_v3.Schema$Event,
+  ): Promise<void> {
+    const calendar = google.calendar({ version: 'v3', auth: client });
+    await calendar.events.patch({ calendarId, eventId, requestBody: event });
+  }
+
+  async deleteEvent(
+    client: OAuth2Client,
+    calendarId: string,
+    eventId: string,
+  ): Promise<void> {
+    const calendar = google.calendar({ version: 'v3', auth: client });
+    try {
+      await calendar.events.delete({ calendarId, eventId });
+    } catch (err) {
+      if (isGoneError(err) || isNotFoundError(err)) return;
+      throw err;
+    }
+  }
+
+  // List every (recurring master) event in the GoalSlot calendar. The calendar
+  // is exclusively ours, so reconcile maps these back to local blocks via our
+  // extended property and prunes orphans. Paginates fully.
+  async listAllEvents(
+    client: OAuth2Client,
+    calendarId: string,
+  ): Promise<calendar_v3.Schema$Event[]> {
+    const calendar = google.calendar({ version: 'v3', auth: client });
+    const events: calendar_v3.Schema$Event[] = [];
+    let pageToken: string | undefined;
+    do {
+      const { data } = await calendar.events.list({
+        calendarId,
+        showDeleted: false,
+        singleEvents: false, // recurring masters, not expanded instances
+        maxResults: 2500,
+        pageToken,
+      });
+      events.push(...(data.items ?? []));
+      pageToken = data.nextPageToken ?? undefined;
+    } while (pageToken);
+    return events;
+  }
+
   async revoke(refreshToken: string): Promise<void> {
     try {
       await this.newOAuthClient().revokeToken(refreshToken);
@@ -174,4 +260,11 @@ export function isInvalidGrant(err: unknown): boolean {
 export function isGoneError(err: unknown): boolean {
   return (err as { code?: number; status?: number })?.code === 410 ||
     (err as { response?: { status?: number } })?.response?.status === 410;
+}
+
+// 404 Not Found — event/calendar already deleted on Google's side. Safe to
+// swallow during best-effort cleanup.
+export function isNotFoundError(err: unknown): boolean {
+  return (err as { code?: number; status?: number })?.code === 404 ||
+    (err as { response?: { status?: number } })?.response?.status === 404;
 }

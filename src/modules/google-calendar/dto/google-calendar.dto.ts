@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsIn,
   IsOptional,
   IsString,
@@ -33,4 +34,12 @@ export class SaveSelectionsDto {
   @ValidateNested({ each: true })
   @Type(() => CalendarSelectionDto)
   selections: CalendarSelectionDto[];
+}
+
+// PR2 push toggle. Global switch for mirroring GoalSlot blocks into the
+// dedicated Google calendar.
+export class UpdatePushDto {
+  @ApiProperty({ example: true })
+  @IsBoolean()
+  pushEnabled: boolean;
 }

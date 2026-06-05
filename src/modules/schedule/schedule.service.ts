@@ -1,14 +1,27 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthService } from '../auth/auth.service';
+import { CalendarPushService } from '../google-calendar/services/calendar-push.service';
 import { CreateScheduleBlockDto, UpdateScheduleBlockDto } from './dto/schedule.dto';
 
 @Injectable()
 export class ScheduleService {
+  private readonly logger = new Logger(ScheduleService.name);
+
   constructor(
     private prisma: PrismaService,
     private authService: AuthService,
+    private push: CalendarPushService,
   ) {}
+
+  // Mirror the user's blocks into Google after any mutation. Fire-and-forget +
+  // reconcile-based, so it's safe over the single/series/updateMany paths and
+  // never blocks the API response. No-ops unless push is enabled.
+  private triggerPush(userId: string): void {
+    void this.push.reconcileUserPush(userId).catch((err) =>
+      this.logger.error(`Schedule push reconcile failed: ${err?.message ?? err}`),
+    );
+  }
 
   async create(userId: string, dto: CreateScheduleBlockDto) {
     // Check plan limits
@@ -21,13 +34,15 @@ export class ScheduleService {
       throw new BadRequestException('Time slot conflicts with an existing schedule block');
     }
 
-    return this.prisma.scheduleBlock.create({
+    const created = await this.prisma.scheduleBlock.create({
       data: {
         ...dto,
         userId,
       },
       include: { goal: true },
     });
+    this.triggerPush(userId);
+    return created;
   }
 
   async findAll(userId: string) {
@@ -99,10 +114,12 @@ export class ScheduleService {
         data: sanitizedSeriesData,
       });
 
-      return this.prisma.scheduleBlock.findFirst({
+      const updatedSeriesHead = await this.prisma.scheduleBlock.findFirst({
         where: { id: blockId },
         include: { goal: true },
       });
+      this.triggerPush(userId);
+      return updatedSeriesHead;
     }
 
     if (updateData.startTime || updateData.endTime || updateData.dayOfWeek !== undefined) {
@@ -118,11 +135,13 @@ export class ScheduleService {
       }
     }
 
-    return this.prisma.scheduleBlock.update({
+    const updated = await this.prisma.scheduleBlock.update({
       where: { id: blockId },
       data: updateData,
       include: { goal: true },
     });
+    this.triggerPush(userId);
+    return updated;
   }
 
   async delete(userId: string, blockId: string) {
@@ -135,6 +154,7 @@ export class ScheduleService {
     }
 
     await this.prisma.scheduleBlock.delete({ where: { id: blockId } });
+    this.triggerPush(userId);
     return { message: 'Schedule block deleted' };
   }
 
@@ -145,6 +165,7 @@ export class ScheduleService {
     const result = await this.prisma.scheduleBlock.deleteMany({
       where: { userId },
     });
+    this.triggerPush(userId);
     return { deleted: result.count };
   }
 
