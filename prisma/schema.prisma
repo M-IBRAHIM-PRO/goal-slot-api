@@ -173,6 +173,10 @@ model ScheduleBlock {
   color       String  @default("#FFD700")
   isRecurring Boolean @default(true)
   seriesId    String  @default(uuid())
+  // When true, this block (and any time entries linked to it) is
+  // hidden from anyone the owner has shared their workspace with.
+  // Default is false so existing rows stay visible after migration.
+  isPrivate   Boolean @default(false)
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
